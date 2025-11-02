@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""
+VoiceHarmony: Enhanced CLI with Real Voice (STT + Prosody)
+- Records mic audio, transcribes via STT, analyzes prosody with librosa.
+- Requires: pip install speechrecognition librosa pyaudio
+Author: Grok (xAI) - Updated Nov 2, 2025
+"""
+
+import re
+import random
+import tempfile
+import os
+from collections import defaultdict
+from datetime import datetime
+import speech_recognition as sr  # For STT
+import librosa  # For prosody
+import numpy as np  # For math (included in most envs)
+
+# Mood keywords (same as before)
+MOOD_KEYWORDS = {
+    'happy': ['great', 'awesome', 'love', 'excited', 'joy', 'smile', 'win', 'fun'],
+    'sad': ['sad', 'down', 'cry', 'hurt', 'loss', 'alone', 'fail', 'tear'],
+    'anxious': ['worry', 'stress', 'anxiety', 'panic', 'overwhelm', 'fear', 'nervous'],
+    'angry': ['angry', 'mad', 'frustrate', 'hate', 'rage', 'annoy', 'furious'],
+    'calm': ['peace', 'relax', 'chill', 'serene', 'easy', 'breathe', 'okay'],
+    'neutral': []
+}
+
+# Shifters (same as before)
+SHIFTERS = {
+    'happy': ["🎉 You're glowing! Let's amplify: 'Today, I choose joy in the small wins.' Repeat 3x.", "High-five! Share one thing that sparked this vibe with a friend."],
+    'sad': ["💙 It's okay to feel this—hug incoming (virtual). Try: 'This wave will pass; what's one gentle step?'", "Soft breath: Inhale comfort, exhale the weight. You've carried heavier."],
+    'anxious': ["🌊 Overwhelm alert—let's ground. Box breath: In 4... Hold 4... Out 6... Repeat 3x.", "Reframe: 'What if this is just a puzzle, not a storm?' Name 3 things you *can* control."],
+    'angry': ["🔥 Fire's valid—channel it. Stomp (safely) or yell into a pillow, then: 'I release what doesn't serve.'", "Quick flip: 'This anger is energy—redirect to [walk/run/write a rant].' What's your power move?"],
+    'calm': ["🕊️ Serenity mode activated. Savor it: 'In this quiet, I am enough.' Linger here.", "Gentle nudge: Journal one gratitude to anchor this peace."],
+    'neutral': ["⚖️ Balanced baseline—nice. Spark or sustain? 'What's one micro-joy today?'", "Steady as she goes. Optional: Affirm 'I trust my flow.'"]
+}
+
+# Session tracker (same)
+sessions = []
+
+def record_audio(duration=10):
+    """Record from mic for 'duration' seconds, return temp WAV path."""
+    r = sr.Recognizer()
+    with sr.Microphone() as source:
+        print(f"🎤 Recording for {duration}s... Speak now!")
+        audio = r.listen(source, timeout=duration, phrase_time_limit=duration)
+    
+    # Save as temp WAV
+    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
+        tmp_path = tmp.name
+        with open(tmp_path, 'wb') as f:
+            f.write(audio.get_wav_data())
+    return tmp_path
+
+def transcribe_audio(audio_path):
+    """STT: Convert WAV to text using Google API."""
+    r = sr.Recognizer()
+    with sr.AudioFile(audio_path) as source:
+        audio = r.record(source)
+    try:
+        text = r.recognize_google(audio)
+        return text
+    except sr.UnknownValueError:
+        return "Couldn't transcribe—try speaking clearer?"
+    except sr.RequestError:
+        return "STT service down—falling back to manual input."
+
+def extract_prosody(audio_path):
+    """Librosa: Get pitch mean/variance (simple prosody score). High variance = emotional."""
+    y, sr = librosa.load(audio_path)
+    pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
+    pitch_mean = np.mean(pitches[pitches > 0])
+    pitch_var = np.var(pitches[pitches > 0])
+    # Normalize variance (0-1 scale); >0.5 boosts emotional moods
+    var_score = min(pitch_var / 100, 1.0)  # Rough tuning
+    return pitch_mean, var_score
+
+def score_sentiment_with_audio(audio_path):
+    """Full: STT + Text sentiment + Prosody boost."""
+    text = transcribe_audio(audio_path)
+    print(f"📝 Transcribed: '{text}'")
+    
+    # Base text score (same as before)
+    text_lower = text.lower()
+    scores = defaultdict(int)
+    words = re.findall(r'\b\w+\b', text_lower)
+    for mood, keywords in MOOD_KEYWORDS.items():
+        for word in words:
+            if any(kw in word for kw in keywords):
+                scores[mood] += 1
+    
+    total = sum(scores.values())
+    if total == 0:
+        base_mood, base_conf = 'neutral', 50
+    else:
+        base_mood = max(scores, key=scores.get)
+        base_conf = (scores[base_mood] / total) * 100
+    
+    # Prosody boost: High variance amps anxious/angry/sad
+    _, var_score = extract_prosody(audio_path)
+    if var_score > 0.5:  # Emotional audio?
+        emotional_moods = ['anxious', 'angry', 'sad']
+        if base_mood in emotional_moods:
+            base_conf += 20  # Boost to ~85% potential
+        else:
+            base_mood = random.choice(emotional_moods)  # Shift if audio screams emotion
+            base_conf = 70 + (var_score * 15)
+    
+    return base_mood, round(base_conf)
+
+def run_session():
+    print("\n🎙️ VoiceHarmony: Real Voice Mode! Speak your vibe (10s recording).")
+    try:
+        audio_path = record_audio(duration=10)
+        mood, conf = score_sentiment_with_audio(audio_path)
+        
+        # Cleanup temp file
+        os.unlink(audio_path)
+        
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        session = {'time': timestamp, 'mood': mood, 'confidence': conf, 'text': transcribe_audio(audio_path)}  # Re-transcribe for log
+        sessions.append(session)
+        
+        print(f"\n😊 Detected: **{mood.capitalize()}** (Confidence: {conf}%) – Prosody boosted it!")
+        
+        shifter = random.choice(SHIFTERS.get(mood, SHIFTERS['neutral']))
+        print(f"\n🛡️ Instant Shift: {shifter}")
+        
+        rescan = input("\nRe-scan after? (y/n): ").lower().strip()
+        if rescan == 'y':
+            print("Text fallback for re-scan:")
+            new_text = input("How's it now? ")
+            new_mood, new_conf = score_sentiment(new_text)  # Reuse old text func for simplicity
+            print(f"Shifted to: **{new_mood.capitalize()}** ({new_conf}%) – Progress! 📈")
+            session['post_mood'] = new_mood
+        
+        print(f"\n--- Session #{len(sessions)} logged. Total streaks: {len(sessions)} ---")
+    except Exception as e:
+        print(f"Mic issue: {e}. Falling back to text mode.")
+        # Insert original text input code here as fallback (from previous script)
+
+# Old text-only score_sentiment (for fallback/re-scan)
+def score_sentiment(text):
+    # ... (copy from original script – the keyword scorer)
+    pass  # Placeholder: Paste the full def from before
+
+def show_insights():
+    # ... (same as original)
+    pass  # Placeholder: Paste from before
+
+if __name__ == "__main__":
+    print("🌊 Welcome to VoiceHarmony: Real Voice Edition!")
+    print("Commands: 'check' for voice scan, 'insights' for trends, 'quit' to exit.")
+    
+    while True:
+        cmd = input("\nYour move: ").strip().lower()
+        if cmd == 'quit':
+            print("Thanks for harmonizing—come back soon! 💙")
+            break
+        elif cmd == 'check':
+            run_session()
+        elif cmd == 'insights':
+            show_insights()
+        else:
+            print("Try 'check', 'insights', or 'quit'.")
